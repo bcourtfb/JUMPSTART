@@ -1,190 +1,249 @@
 #!/usr/bin/env python3
-
-(WORK IN PROGRESS)
+"""JumpStart - post-install setup helper for Kali Linux. (WORK IN PROGRESS)"""
 
 import os
+import subprocess
 import sys
-import time
-import colorama
-from colorama import Fore, Back, Style
+
+try:
+    import colorama
+    from colorama import Fore
+except ImportError:
+    sys.exit("colorama is required: apt-get install python3-colorama")
+
 colorama.init(autoreset=True)
 
 ################################################################
-# colored text and background
+# Settings
 
-# print(Fore.RED + 'some red text')
-# print(Back.GREEN + 'and with a green background')
-# print(Style.DIM + 'and in dim text')
-# print(Style.BRIGHT + "BRIGHT")
-# print(Style.RESET_ALL)
-# print('back to normal now')
+KEYRING_DIR = "/etc/apt/keyrings"
+TOOLS_DIR = "/opt"
 
-################################################################
-os.system("clear")
-print(Fore.CYAN + r"""
-    
-     _ _   _ __  __ ____    ____ _____  _    ____ _____ 
+# Packages available straight from the Kali repos
+APT_PACKAGES = [
+    "terminator", "plank", "gufw", "airgeddon", "python3-pip", "vlc",
+    "filezilla", "qbittorrent", "htop", "rlwrap", "git", "wget", "gnupg",
+]
+
+BANNER = r"""
+     _ _   _ __  __ ____    ____ _____  _    ____ _____
     | | | | |  \/  |  _ \  / ___|_   _|/ \  |  _ \_   _|
- _  | | | | | |\/| | |_) | \___ \ | | / _ \ | |_) || |  
-| |_| | |_| | |  | |  __/   ___) || |/ ___ \|  _ < | |  
+ _  | | | | | |\/| | |_) | \___ \ | | / _ \ | |_) || |
+| |_| | |_| | |  | |  __/   ___) || |/ ___ \|  _ < | |
  \___/ \___/|_|  |_|_|     |____/ |_/_/   \_\_| \_\|_|
-    
-    """)
+"""
 
+################################################################
+# Helpers
+
+
+def clear_screen():
+    os.system("clear")
+
+
+def pause():
+    input(Fore.YELLOW + "\nPress Enter to continue...")
+
+
+def run(cmd):
+    """Run a shell command, echo it first, and return True if it succeeded."""
+    print(Fore.BLUE + f"$ {cmd}")
+    result = subprocess.run(cmd, shell=True)
+    if result.returncode != 0:
+        print(Fore.RED + f"[!] Failed (exit {result.returncode}): {cmd}")
+        return False
+    return True
+
+
+def run_all(*cmds):
+    """Run commands in order, stopping at the first one that fails."""
+    return all(run(cmd) for cmd in cmds)
+
+
+def apt_install(*packages):
+    return run("apt-get install -y " + " ".join(packages))
+
+
+def add_apt_repo(name, key_url, repo, arch=None):
+    """Add a third-party APT repo with its own keyring (apt-key is deprecated)."""
+    os.makedirs(KEYRING_DIR, exist_ok=True)
+    keyring = f"{KEYRING_DIR}/{name}.gpg"
+    if not run(f"wget -qO- {key_url} | gpg --dearmor --yes -o {keyring}"):
+        return False
+    options = f"signed-by={keyring}" + (f" arch={arch}" if arch else "")
+    with open(f"/etc/apt/sources.list.d/{name}.list", "w") as f:
+        f.write(f"deb [{options}] {repo}\n")
+    return run("apt-get update")
+
+
+def git_clone(url, dest):
+    """Clone a repo, or pull the latest changes if it is already there."""
+    if os.path.isdir(os.path.join(dest, ".git")):
+        return run(f"git -C {dest} pull")
+    return run(f"git clone {url} {dest}")
 
 
 ################################################################
-#Variables
+# Install steps
 
-ffox = ["[Desktop Entry]", "Name=Firefox", "Comment=Web Browser", "Exec=/opt/firefox/firefox %u", "Terminal=false", "Type=Application", "Icon=/opt/firefox/browser/chrome/icons/default/default128.png", "Categories=Network;WebBrowser;", "MimeType=text/html;text/xml;application/xhtml+xml;application/xml;application/vnd.mozilla.xul+xml;application/rss+xml;application/rdf+xml;image/gif;image/jpeg;image/png;x-scheme-handler/http;x-scheme-handler/https;", "StartupNotify=true"]
-Programs_to_Install = ["terminator", "plank", "anonsurf", "cheat.sh", "gufw", "payload all things", "airgeddon", "python3-pip", "vlc", "filezilla", "qbittorrent", "htop", "postgresql-update & run at startup", "apt-transport-https", "Change default ssh keys", "make python3 default"]
-SRC1=("deb https://http.kali.org/kali kali-rolling main non-free contrib", "deb-src https://http.kali.org/kali kali-rolling main non-free contrib")
+
+def install_sublime():
+    return (add_apt_repo("sublime-text",
+                         "https://download.sublimetext.com/sublimehq-pub.gpg",
+                         "https://download.sublimetext.com/ apt/stable/")
+            and apt_install("sublime-text"))
+
+
+def install_anonsurf():
+    dest = f"{TOOLS_DIR}/kali-anonsurf"
+    return (git_clone("https://github.com/Und3rf10w/kali-anonsurf.git", dest)
+            and run(f"cd {dest} && ./installer.sh"))
+
+
+def install_cheat_sh():
+    return run_all("curl -fsSL https://cht.sh/:cht.sh -o /usr/local/bin/cht.sh",
+                   "chmod +x /usr/local/bin/cht.sh")
+
+
+def install_payloads():
+    return git_clone("https://github.com/swisskyrepo/PayloadsAllTheThings.git",
+                     f"{TOOLS_DIR}/PayloadsAllTheThings")
+
+
+def install_postgresql():
+    # Kali ships PostgreSQL; the upstream pgdg repo has no "kali-rolling" suite
+    return apt_install("postgresql") and run("systemctl enable --now postgresql")
+
+
+def regenerate_ssh_keys():
+    # Kali images ship identical host keys, so remove them before regenerating
+    return run_all("rm -f /etc/ssh/ssh_host_*",
+                   "dpkg-reconfigure openssh-server")
+
+
+def make_python3_default():
+    return apt_install("python-is-python3")
+
+
+INSTALL_STEPS = [
+    ("Kali packages: " + ", ".join(APT_PACKAGES), lambda: apt_install(*APT_PACKAGES)),
+    ("Sublime Text", install_sublime),
+    ("AnonSurf", install_anonsurf),
+    ("cheat.sh", install_cheat_sh),
+    ("PayloadsAllTheThings", install_payloads),
+    ("PostgreSQL (enabled at startup)", install_postgresql),
+    ("Regenerate default SSH host keys", regenerate_ssh_keys),
+    ("Make python3 the default python", make_python3_default),
+]
 
 ################################################################
-#Ensure the script is being ran as root
+# Menu actions
 
-if not os.geteuid()==0:
-    sys.exit(print(Fore.RED +'This script must be run as root!'))
-    
-################################################################
-# Main Menu user selection
 
-def menu():
-    time.sleep(1)
-    print("\n")
-    print(Fore.GREEN + "[1] Update & Upgrade system\n")
-    print(Fore.GREEN + "[2] Install Programs\n")
-    print(Fore.GREEN + "[3] Replace Firefox ESR with Regular Firefox\n")
-    print(Fore.GREEN + "[4] Install VScode\n")
-    print(Fore.GREEN + "[0] Exit Program\n")
-      
-menu()
-option = int(input(Fore.GREEN + "Enter your option: "))
-print("\n")
+def update_system():
+    run_all("apt-get update",
+            "apt-get full-upgrade -y",
+            "apt-get autoremove -y",
+            "apt-get autoclean",
+            "updatedb")
+    pause()
 
-################################################################
-# Menu functions to be called
 
-def option_1():
-    time.sleep(1)
-    os.system("apt-get update & apt-get full-upgrade -y && apt-get autoremove && sudo apt-get autoclean && sudo updatedb")
-    print("\n")
-    input(Fore.YELLOW + "Press Enter to continue...") 
-    
-    
-def option_2():
-    time.sleep(1)
-    for items in Programs_to_Install:
-        print(Fore.GREEN + "The following programs will be installed: ", end="")
-        print(Fore.MAGENTA + items)
-    print("\n")
-    print(Fore.GREEN + "Please be patient")
-    time.sleep(2)
-    print("\n")
-    os.system("sudo apt-get install terminator -y")
-    print("\n")
-    os.system("apt-get install plank -y")
-    print("\n")
-    os.system("wget -qO - https://download.sublimetext.com/sublimehq-pub.gpg | sudo apt-key add -")
-    os.system("echo 'deb https://download.sublimetext.com/ apt/stable/' | sudo tee /etc/apt/sources.list.d/sublime-text.list && apt-get update & apt-get install sublime-text")
-    print("\n")
-    os.system("git clone https://github.com/Und3rf10w/kali-anonsurf.git && ~/kali-anonsurf/installer.sh")
-    print("\n")
-    os.system("curl https://cht.sh/:cht.sh | tee /usr/local/bin/cht.sh && chmod +x /usr/local/bin/cht.sh && apt-get install rlwrap -y")
-    print("\n")
-    os.system("apt-get install gufw -y")
-    print("\n")
-    os.system("git clone https://github.com/swisskyrepo/PayloadsAllTheThings.git")
-    print("\n")
-    os.system("apt-get install airgeddon -y")
-    print("\n")
-    os.system("apt-get install python3-pip -y")
-    print("\n")
-    os.system("apt-get install vlc -y")
-    print("\n")
-    os.system("apt-get install filezilla -y")
-    print("\n")
-    os.system("apt-get install qbittorrent -y")
-    print("\n")
-    os.system("apt-get install htop -y")
-    print("\n")
-    os.system("sudo sh -c 'echo 'deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main' > /etc/apt/sources.list.d/pgdg.list'")
-    os.system("wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -")
-    os.system("apt-get -y install postgresql")
-    os.system("update-rc.d postgresql enable")
-    print("\n")
-    os.system("dpkg-reconfigure openssh-server")
-    print("\n")
-    os.system("update-alternatives --install /usr/bin/python python /usr/bin/python2.7 1 && update-alternatives --install /usr/bin/python python /usr/bin/python3.9 2")
-    print("\n")
-    print(Fore.GREEN + "Program Installation Complete")
-    time.sleep(2)
-    print("\n")
-    input(Fore.YELLOW + "Press Enter to continue...")
-    
-        
-    
-def option_3():
-    time.sleep(1)
-    os.system("apt-get --purge autoremove firefox-esr -y && wget -O FirefoxSetup.tar.bz2 'https://download.mozilla.org/?product=firefox-latest&os=linux64'")
-    os.system("tar -xvf FirefoxSetup.tar.bz2 && rm FirefoxSetup*")
-    os.system("sudo mv firefox /opt")
-    os.system("touch firefox.txt")
-    with open("firefox.txt", "w+") as f:
-        for items in ffox:
-            f.write('%s\n' %items)
-    f.close() 
-    os.rename("firefox.txt", "firefox.desktop")
-    os.system("mv firefox.desktop /usr/share/applications")
-    os.system("ln -s /opt/firefox/firefox /usr/local/bin/firefox")
-    print("\n")
-    print(Fore.GREEN + "Firefox Installation Complete")
-    time.sleep(2)
-    print("\n") 
-    input(Fore.YELLOW + "Press Enter to continue...")
-    
-def option_4():
-    time.sleep(1)
-    os.system("wget https://az764295.vo.msecnd.net/stable/3c4e3df9e89829dce27b7b5c24508306b151f30d/code_1.55.2-1618307277_amd64.deb")
-    os.system("apt install ./code*.deb")
-    os.system("rm code*")
-    print("\n")
-    print(Fore.GREEN + "VScode Installation Complete")
-    
-################################################################
-# Menu Options
-    
-while option != 0:
-    if option == 1:
-        os.system("clear")
-        print(Fore.GREEN + "Executing Option 1\n")
-        option_1()
-    elif option == 2:
-        os.system("clear")
-        print(Fore.GREEN + "Executing Option 2\n")
-        option_2()
-    elif option == 3:
-        os.system("clear")
-        print(Fore.GREEN + "Executing Option 3\n")
-        option_3()
-    elif option == 4:
-        os.system("clear")
-        print(Fore.GREEN + "Executing Option 4\n")
-        option_4()
+def install_programs():
+    print(Fore.GREEN + "The following will be installed:")
+    for label, _ in INSTALL_STEPS:
+        print(Fore.MAGENTA + f"  - {label}")
+    print(Fore.GREEN + "\nPlease be patient\n")
+
+    if not run("apt-get update"):
+        pause()
+        return
+
+    failed = []
+    for label, step in INSTALL_STEPS:
+        print(Fore.CYAN + f"\n==> {label}")
+        if not step():
+            failed.append(label)
+
+    if failed:
+        print(Fore.RED + "\nThese steps failed:")
+        for label in failed:
+            print(Fore.RED + f"  - {label}")
     else:
-        print(Fore.RED + "Invalid Option\n")
-        
-            
-    menu()
-    option = int(input(Fore.GREEN + "Enter your option: "))
-    print("\n")
+        print(Fore.GREEN + "\nProgram Installation Complete")
+    pause()
 
-os.system("clear")
-print(Fore.YELLOW + "Thank you for using this program. Good bye!")
-time.sleep(1)
+
+def install_firefox():
+    # Mozilla's APT repo keeps Firefox updated through apt, unlike a tarball in /opt
+    ok = add_apt_repo("mozilla",
+                      "https://packages.mozilla.org/apt/repo-signing-key.gpg",
+                      "https://packages.mozilla.org/apt mozilla main")
+    if ok:
+        with open("/etc/apt/preferences.d/mozilla", "w") as f:
+            f.write("Package: *\nPin: origin packages.mozilla.org\nPin-Priority: 1000\n")
+        # Install the new browser before removing the old one
+        ok = apt_install("firefox") and run("apt-get purge -y firefox-esr")
+    print(Fore.GREEN + "\nFirefox Installation Complete" if ok
+          else Fore.RED + "\nFirefox Installation Failed")
+    pause()
+
+
+def install_vscode():
+    ok = (add_apt_repo("vscode",
+                       "https://packages.microsoft.com/keys/microsoft.asc",
+                       "https://packages.microsoft.com/repos/code stable main",
+                       arch="amd64")
+          and apt_install("code"))
+    print(Fore.GREEN + "\nVScode Installation Complete" if ok
+          else Fore.RED + "\nVScode Installation Failed")
+    pause()
+
+
+MENU = {
+    "1": ("Update & Upgrade system", update_system),
+    "2": ("Install Programs", install_programs),
+    "3": ("Replace Firefox ESR with Regular Firefox", install_firefox),
+    "4": ("Install VScode", install_vscode),
+}
 
 ################################################################
+# Main loop
 
 
+def main():
+    if not sys.platform.startswith("linux"):
+        sys.exit(Fore.RED + "This script only runs on Kali/Debian Linux.")
+    if os.geteuid() != 0:
+        sys.exit(Fore.RED + "This script must be run as root!")
+
+    while True:
+        clear_screen()
+        print(Fore.CYAN + BANNER)
+        for key, (label, _) in MENU.items():
+            print(Fore.GREEN + f"[{key}] {label}\n")
+        print(Fore.GREEN + "[0] Exit Program\n")
+
+        choice = input(Fore.GREEN + "Enter your option: ").strip()
+        if choice == "0":
+            break
+        if choice not in MENU:
+            print(Fore.RED + "Invalid Option")
+            pause()
+            continue
+
+        label, action = MENU[choice]
+        clear_screen()
+        print(Fore.GREEN + f"Executing: {label}\n")
+        action()
+
+    clear_screen()
+    print(Fore.YELLOW + "Thank you for using this program. Good bye!")
 
 
+if __name__ == "__main__":
+    try:
+        main()
+    except (KeyboardInterrupt, EOFError):
+        print(Fore.YELLOW + "\nAborted.")
+        sys.exit(130)
